@@ -66,14 +66,14 @@ class AnalysisStatusResponse(BaseModel):
 
 def _is_allowed_name(name: str) -> bool:
     lower = name.lower()
-    return lower.endswith((".vcf", ".vcf.gz"))
+    return lower.endswith((".vcf", ".vcf.gz", ".bgz")) or (lower.endswith(".gz") and ".vcf" in lower)
 
 
 @router.post("/analyze-vcf", response_model=Report)
 async def analyze_vcf(
     file: Annotated[UploadFile | None, File()] = None,
     demo: bool = Query(False),
-    genome_build: GenomeBuild | None = Query(default=None),
+    genome_build: str | None = Query(default=None),
 ) -> Report:
     """Upload a VCF or use demo data, parse variants, and run the full multi-agent pipeline."""
     settings = get_settings()
@@ -97,7 +97,8 @@ async def analyze_vcf(
         if not _is_allowed_name(file.filename):
             raise HTTPException(status_code=400, detail="Only .vcf and .vcf.gz files are accepted.")
 
-        suffix = ".vcf.gz" if file.filename.lower().endswith(".vcf.gz") else ".vcf"
+        lower_name = file.filename.lower()
+        suffix = ".vcf.gz" if lower_name.endswith((".vcf.gz", ".gz", ".bgz")) else ".vcf"
         dest = settings.uploads_dir / f"{job_id}{suffix}"
         max_bytes = settings.max_upload_mb * 1024 * 1024
         written = 0
@@ -123,16 +124,21 @@ async def analyze_vcf(
             dest.unlink(missing_ok=True)
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
-    # Normalize genome_build if called directly in code with Query default
-    if not isinstance(genome_build, GenomeBuild):
-        genome_build = None
+    target_build: GenomeBuild | None = None
+    if genome_build:
+        gb_clean = genome_build.strip().lower()
+        if "37" in gb_clean or "19" in gb_clean:
+            target_build = GenomeBuild.grch37
+        elif "38" in gb_clean:
+            target_build = GenomeBuild.grch38
 
     # Parse VCF
     try:
         parsed = parse_vcf(
             dest,
-            genome_build=genome_build,
+            genome_build=target_build,
             max_variants=settings.max_variants,
+            cap_variants=True,
         )
     except VCFParseError as exc:
         dest.unlink(missing_ok=True)
@@ -225,3 +231,39 @@ async def verify_claim_endpoint(req: VerifyRequest) -> VerifyResponse:
         verification=verification,
         disclaimer=DISCLAIMER,
     )
+
+
+@router.get("/jobs")
+async def list_analysis_jobs(limit: int = Query(20, ge=1, le=100)) -> dict:
+    """List recent analysis jobs from Supabase."""
+    from app.database import is_enabled, list_jobs
+
+    if not is_enabled():
+        return {
+            "database": "not_configured",
+            "jobs": [],
+            "message": "Supabase not configured. Set SUPABASE_URL and SUPABASE_KEY in .env.",
+        }
+
+    jobs = list_jobs(limit=limit)
+    return {
+        "database": "supabase",
+        "jobs": jobs,
+        "total": len(jobs),
+    }
+
+
+@router.get("/db-status")
+async def database_status() -> dict:
+    """Check Supabase database connectivity."""
+    from app.database import is_enabled
+
+    return {
+        "database": "supabase" if is_enabled() else "file_only",
+        "connected": is_enabled(),
+        "message": (
+            "Connected to Supabase"
+            if is_enabled()
+            else "Supabase not configured — using file-based persistence"
+        ),
+    }

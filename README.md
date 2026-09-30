@@ -66,6 +66,35 @@ Then open **http://localhost:5173** in your browser.
 
 ---
 
+## 🗄 Database (Supabase)
+
+GENESIS uses **Supabase** (PostgreSQL) for persistent storage of analysis jobs, variants, evidence, claims, and reports.
+
+### Setup (Optional — works without it)
+
+1. Create a free project at [supabase.com](https://supabase.com)
+2. Go to **SQL Editor** → paste and run [`backend/supabase_schema.sql`](backend/supabase_schema.sql)
+3. Go to **Settings → API** → copy your **Project URL** and **service_role key**
+4. Add to your `.env`:
+   ```
+   SUPABASE_URL=https://your-project.supabase.co
+   SUPABASE_KEY=your-service-role-key
+   ```
+
+### Tables Created
+| Table | Purpose |
+|-------|---------|
+| `analysis_jobs` | Job metadata, status tracking |
+| `variants` | Parsed genomic variants per job |
+| `evidence_items` | ClinVar/gnomAD/VEP evidence per variant |
+| `claims` | Research Agent claims with verification verdicts |
+| `reports` | Final compiled reports |
+| `variant_summaries` | Per-variant summaries linked to reports |
+
+> **Note:** If Supabase is not configured, GENESIS falls back to file-based persistence automatically. The demo works either way.
+
+---
+
 ## 🎮 Demo Mode (Judge Walkthrough)
 
 Click **"Try Live Demo"** on the landing page. This uses a curated VCF file with 8 clinically characterized variants, with offline fallback evidence, so it works **without internet**.

@@ -73,9 +73,10 @@ def _jsonish(value: Any) -> Any:
 
 
 def _open_text(path: Path) -> TextIO:
-    if path.name.endswith(".gz"):
-        return gzip.open(path, "rt", encoding="utf-8", errors="replace")
-    return path.open("rt", encoding="utf-8", errors="replace")
+    name_lower = path.name.lower()
+    if name_lower.endswith((".gz", ".bgz")):
+        return gzip.open(path, "rt", encoding="utf-8-sig", errors="replace")
+    return path.open("rt", encoding="utf-8-sig", errors="replace")
 
 
 def _detect_genome_build(
@@ -176,6 +177,7 @@ def parse_vcf(
     *,
     genome_build: GenomeBuild | None = None,
     max_variants: int = 200,
+    cap_variants: bool = False,
 ) -> ParseResult:
     if not path.exists() or not path.is_file():
         raise VCFParseError("VCF file was not found.")
@@ -194,7 +196,12 @@ def parse_vcf(
     if vcf_cls is not None:
         try:
             variants = _parse_with_cyvcf2(
-                path, vcf_cls, build, max_variants=max_variants, warnings=warnings
+                path,
+                vcf_cls,
+                build,
+                max_variants=max_variants,
+                warnings=warnings,
+                cap_variants=cap_variants,
             )
             return ParseResult(
                 variants=variants,
@@ -208,7 +215,13 @@ def parse_vcf(
         except Exception:
             warnings.append("cyvcf2 failed; using the built-in VCF parser.")
 
-    variants = _parse_with_python(path, build, max_variants=max_variants)
+    variants = _parse_with_python(
+        path,
+        build,
+        max_variants=max_variants,
+        warnings=warnings,
+        cap_variants=cap_variants,
+    )
     return ParseResult(
         variants=variants,
         genome_build=build,
@@ -232,8 +245,127 @@ def _read_header_lines(path: Path) -> list[str]:
     return lines
 
 
-def _parse_with_python(path: Path, build: GenomeBuild, max_variants: int) -> list[Variant]:
+def _split_number_a_fields(info: dict[str, Any], allele_index: int) -> None:
+    """If an INFO value is comma-separated (Number=A style), keep the matching allele."""
+    for key in list(info):
+        value = info[key]
+        if not isinstance(value, str) or "," not in value:
+            continue
+        parts = value.split(",")
+        if 0 <= allele_index < len(parts):
+            info[key] = parts[allele_index]
+
+
+def _build_variant(
+    *,
+    chrom: str,
+    pos: int,
+    ref: str,
+    alt: str,
+    vcf_id: str,
+    qual: float | None,
+    filt: str | None,
+    info: dict[str, Any],
+    genome_build: GenomeBuild,
+) -> Variant:
+    key = make_variant_key(chrom, pos, ref, alt)
+    clean_info = {k: _jsonish(v) for k, v in info.items()}
+    if vcf_id and vcf_id != ".":
+        clean_info.setdefault("vcf_id", vcf_id)
+    return Variant(
+        id=key,
+        chrom=chrom,
+        pos=pos,
+        ref=ref,
+        alt=alt,
+        rsid=extract_rsid(vcf_id),
+        qual=qual,
+        filter=filt,
+        info=clean_info,
+        genome_build=genome_build,
+        key=key,
+    )
+
+
+def _parse_with_cyvcf2(
+    path: Path,
+    vcf_cls: Any,
+    build: GenomeBuild,
+    max_variants: int,
+    warnings: list[str],
+    cap_variants: bool = False,
+) -> list[Variant]:
     variants: list[Variant] = []
+    reader = vcf_cls(str(path))
+    reached_cap = False
+    try:
+        for record in reader:
+            chrom = normalize_chrom(str(record.CHROM))
+            pos = int(record.POS)
+            vcf_id = record.ID if record.ID not in {None, "."} else "."
+            ref = str(record.REF)
+            alts = [str(a) for a in (record.ALT or []) if a and str(a) != "."]
+            if not alts:
+                raise VCFParseError(f"Variant {chrom}:{pos} is missing ALT alleles.")
+            info_raw: dict[str, Any] = {}
+            try:
+                info_raw = dict(record.INFO)
+            except Exception:
+                warnings.append("Could not read all INFO fields from a record.")
+            for i, alt in enumerate(alts):
+                allele_info = {k: _jsonish(v) for k, v in info_raw.items()}
+                for key, value in list(allele_info.items()):
+                    if isinstance(value, list) and 0 <= i < len(value):
+                        allele_info[key] = value[i]
+                variants.append(
+                    _build_variant(
+                        chrom=chrom,
+                        pos=pos,
+                        ref=ref,
+                        alt=alt,
+                        vcf_id=str(vcf_id),
+                        qual=_qual(record.QUAL),
+                        filt=_filter_value(record.FILTER),
+                        info=allele_info,
+                        genome_build=build,
+                    )
+                )
+                if len(variants) >= max_variants:
+                    if cap_variants:
+                        warnings.append(
+                            f"VCF has more than {max_variants} alleles after splitting multi-allelic records; "
+                            f"truncated to first {max_variants} for analysis."
+                        )
+                        reached_cap = True
+                        break
+                    elif len(variants) > max_variants or (len(variants) == max_variants and not cap_variants):
+                        # For testing max_variants check
+                        pass
+                if not cap_variants and len(variants) > max_variants:
+                    raise VCFParseError(
+                        f"VCF has more than {max_variants} alleles after splitting multi-allelic records."
+                    )
+            if reached_cap:
+                break
+    finally:
+        try:
+            reader.close()
+        except Exception:
+            pass
+    if not variants:
+        raise VCFParseError("VCF contains no variant records.")
+    return variants
+
+
+def _parse_with_python(
+    path: Path,
+    build: GenomeBuild,
+    max_variants: int,
+    warnings: list[str] | None = None,
+    cap_variants: bool = False,
+) -> list[Variant]:
+    variants: list[Variant] = []
+    reached_cap = False
     with _open_text(path) as handle:
         columns_ok = False
         for line_no, raw in enumerate(handle, start=1):
@@ -286,109 +418,23 @@ def _parse_with_python(path: Path, build: GenomeBuild, max_variants: int) -> lis
                         genome_build=build,
                     )
                 )
-                if len(variants) > max_variants:
+                if len(variants) >= max_variants:
+                    if cap_variants:
+                        if warnings is not None:
+                            warnings.append(
+                                f"VCF has more than {max_variants} alleles after splitting multi-allelic records; "
+                                f"truncated to first {max_variants} for analysis."
+                            )
+                        reached_cap = True
+                        break
+                if not cap_variants and len(variants) > max_variants:
                     raise VCFParseError(
                         f"VCF has more than {max_variants} alleles after splitting multi-allelic records."
                     )
+            if reached_cap:
+                break
     if not columns_ok:
         raise VCFParseError("Malformed VCF: missing #CHROM header row.")
-    if not variants:
-        raise VCFParseError("VCF contains no variant records.")
-    return variants
-
-
-def _split_number_a_fields(info: dict[str, Any], allele_index: int) -> None:
-    """If an INFO value is comma-separated (Number=A style), keep the matching allele."""
-    for key in list(info):
-        value = info[key]
-        if not isinstance(value, str) or "," not in value:
-            continue
-        parts = value.split(",")
-        if 0 <= allele_index < len(parts):
-            info[key] = parts[allele_index]
-
-
-def _build_variant(
-    *,
-    chrom: str,
-    pos: int,
-    ref: str,
-    alt: str,
-    vcf_id: str,
-    qual: float | None,
-    filt: str | None,
-    info: dict[str, Any],
-    genome_build: GenomeBuild,
-) -> Variant:
-    key = make_variant_key(chrom, pos, ref, alt)
-    clean_info = {k: _jsonish(v) for k, v in info.items()}
-    if vcf_id and vcf_id != ".":
-        clean_info.setdefault("vcf_id", vcf_id)
-    return Variant(
-        id=key,
-        chrom=chrom,
-        pos=pos,
-        ref=ref,
-        alt=alt,
-        rsid=extract_rsid(vcf_id),
-        qual=qual,
-        filter=filt,
-        info=clean_info,
-        genome_build=genome_build,
-        key=key,
-    )
-
-
-def _parse_with_cyvcf2(
-    path: Path,
-    vcf_cls: Any,
-    build: GenomeBuild,
-    max_variants: int,
-    warnings: list[str],
-) -> list[Variant]:
-    variants: list[Variant] = []
-    reader = vcf_cls(str(path))
-    try:
-        for record in reader:
-            chrom = normalize_chrom(str(record.CHROM))
-            pos = int(record.POS)
-            vcf_id = record.ID if record.ID not in {None, "."} else "."
-            ref = str(record.REF)
-            alts = [str(a) for a in (record.ALT or []) if a and str(a) != "."]
-            if not alts:
-                raise VCFParseError(f"Variant {chrom}:{pos} is missing ALT alleles.")
-            info_raw: dict[str, Any] = {}
-            try:
-                info_raw = dict(record.INFO)
-            except Exception:
-                warnings.append("Could not read all INFO fields from a record.")
-            for i, alt in enumerate(alts):
-                allele_info = {k: _jsonish(v) for k, v in info_raw.items()}
-                for key, value in list(allele_info.items()):
-                    if isinstance(value, list) and 0 <= i < len(value):
-                        allele_info[key] = value[i]
-                variants.append(
-                    _build_variant(
-                        chrom=chrom,
-                        pos=pos,
-                        ref=ref,
-                        alt=alt,
-                        vcf_id=str(vcf_id),
-                        qual=_qual(record.QUAL),
-                        filt=_filter_value(record.FILTER),
-                        info=allele_info,
-                        genome_build=build,
-                    )
-                )
-                if len(variants) > max_variants:
-                    raise VCFParseError(
-                        f"VCF has more than {max_variants} alleles after splitting multi-allelic records."
-                    )
-    finally:
-        try:
-            reader.close()
-        except Exception:
-            pass
     if not variants:
         raise VCFParseError("VCF contains no variant records.")
     return variants

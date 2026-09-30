@@ -26,14 +26,14 @@ class UploadResponse(BaseModel):
 
 def _is_allowed_name(name: str) -> bool:
     lower = name.lower()
-    return lower.endswith((".vcf", ".vcf.gz"))
+    return lower.endswith((".vcf", ".vcf.gz", ".bgz")) or (lower.endswith(".gz") and ".vcf" in lower)
 
 
 @router.post("/upload", response_model=UploadResponse)
 async def upload_vcf(
     file: Annotated[UploadFile | None, File()] = None,
     demo: bool = Query(False),
-    genome_build: GenomeBuild | None = Query(default=None),
+    genome_build: str | None = Query(default=None),
 ) -> UploadResponse:
     settings = get_settings()
     purge_expired(settings)
@@ -58,7 +58,8 @@ async def upload_vcf(
         original_name = file.filename
         if not _is_allowed_name(original_name):
             raise HTTPException(status_code=400, detail="Only .vcf and .vcf.gz files are accepted.")
-        suffix = ".vcf.gz" if original_name.lower().endswith(".vcf.gz") else ".vcf"
+        lower_name = original_name.lower()
+        suffix = ".vcf.gz" if lower_name.endswith((".vcf.gz", ".gz", ".bgz")) else ".vcf"
         dest = settings.uploads_dir / f"{job_id}{suffix}"
         max_bytes = settings.max_upload_mb * 1024 * 1024
         written = 0
@@ -83,11 +84,20 @@ async def upload_vcf(
             dest.unlink(missing_ok=True)
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
+    target_build: GenomeBuild | None = None
+    if genome_build:
+        gb_clean = genome_build.strip().lower()
+        if "37" in gb_clean or "19" in gb_clean:
+            target_build = GenomeBuild.grch37
+        elif "38" in gb_clean:
+            target_build = GenomeBuild.grch38
+
     try:
         parsed = parse_vcf(
             dest,
-            genome_build=genome_build,
+            genome_build=target_build,
             max_variants=settings.max_variants,
+            cap_variants=True,
         )
     except VCFParseError as exc:
         dest.unlink(missing_ok=True)

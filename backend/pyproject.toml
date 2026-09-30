@@ -17,6 +17,7 @@ dependencies = [
   "tenacity>=9.0.0",
   "cyvcf2>=0.31.0",
   "reportlab>=4.2.0",
+  "supabase>=2.0.0",
 ]
 
 [project.optional-dependencies]

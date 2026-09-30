@@ -28,12 +28,17 @@ export const UploadSection: React.FC<UploadSectionProps> = ({
   const validateAndSetFile = (file: File) => {
     setErrorMsg(null);
     const lowerName = file.name.toLowerCase();
-    if (!lowerName.endsWith(".vcf") && !lowerName.endsWith(".vcf.gz")) {
+    const isValidExt =
+      lowerName.endsWith(".vcf") ||
+      lowerName.endsWith(".vcf.gz") ||
+      lowerName.endsWith(".bgz") ||
+      (lowerName.endsWith(".gz") && lowerName.includes(".vcf"));
+    if (!isValidExt) {
       setErrorMsg("Invalid file format. Please upload a .vcf or .vcf.gz file.");
       return;
     }
-    if (file.size > 10 * 1024 * 1024) {
-      setErrorMsg("File exceeds the 10 MB maximum demo size limit.");
+    if (file.size > 50 * 1024 * 1024) {
+      setErrorMsg("File exceeds the 50 MB maximum size limit.");
       return;
     }
     setSelectedFile(file);
@@ -137,7 +142,7 @@ export const UploadSection: React.FC<UploadSectionProps> = ({
           <input
             ref={fileInputRef}
             type="file"
-            accept=".vcf,.vcf.gz"
+            accept=".vcf,.vcf.gz,.gz,.bgz"
             onChange={handleFileChange}
             className="hidden"
           />
@@ -177,7 +182,7 @@ export const UploadSection: React.FC<UploadSectionProps> = ({
                 </span>
               </p>
               <p className="text-xs text-slate-400">
-                Supported: <span className="font-mono text-slate-300">.vcf, .vcf.gz</span> · Maximum 10 MB for MVP
+                Supported: <span className="font-mono text-slate-300">.vcf, .vcf.gz</span> · Maximum 50 MB
               </p>
             </div>
           )}

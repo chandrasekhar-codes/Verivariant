@@ -12,7 +12,7 @@ node_modules/
 frontend/dist/
 
 # Uploads (generated at runtime)
-backend/uploads/*.vcf
+backend/uploads/*.vcf*
 backend/uploads/*.json
 !backend/uploads/.gitkeep
 
