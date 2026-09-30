@@ -37,10 +37,6 @@ export const UploadSection: React.FC<UploadSectionProps> = ({
       setErrorMsg("Invalid file format. Please upload a .vcf or .vcf.gz file.");
       return;
     }
-    if (file.size > 50 * 1024 * 1024) {
-      setErrorMsg("File exceeds the 50 MB maximum size limit.");
-      return;
-    }
     setSelectedFile(file);
   };
 
@@ -156,7 +152,10 @@ export const UploadSection: React.FC<UploadSectionProps> = ({
                 {selectedFile.name}
               </p>
               <p className="text-xs text-slate-400 font-mono mb-3">
-                {(selectedFile.size / 1024).toFixed(1)} KB · Ready to parse
+                {selectedFile.size >= 1024 * 1024
+                  ? `${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB`
+                  : `${(selectedFile.size / 1024).toFixed(1)} KB`}{" "}
+                · Ready to parse
               </p>
               <button
                 type="button"
@@ -182,7 +181,7 @@ export const UploadSection: React.FC<UploadSectionProps> = ({
                 </span>
               </p>
               <p className="text-xs text-slate-400">
-                Supported: <span className="font-mono text-slate-300">.vcf, .vcf.gz</span> · Maximum 50 MB
+                Supported: <span className="font-mono text-slate-300">.vcf, .vcf.gz</span> · No file size limit
               </p>
             </div>
           )}

@@ -100,7 +100,6 @@ async def analyze_vcf(
         lower_name = file.filename.lower()
         suffix = ".vcf.gz" if lower_name.endswith((".vcf.gz", ".gz", ".bgz")) else ".vcf"
         dest = settings.uploads_dir / f"{job_id}{suffix}"
-        max_bytes = settings.max_upload_mb * 1024 * 1024
         written = 0
         try:
             with dest.open("wb") as out:
@@ -109,13 +108,6 @@ async def analyze_vcf(
                     if not chunk:
                         break
                     written += len(chunk)
-                    if written > max_bytes:
-                        out.close()
-                        dest.unlink(missing_ok=True)
-                        raise HTTPException(
-                            status_code=413,
-                            detail=f"File exceeds {settings.max_upload_mb} MB upload limit.",
-                        )
                     out.write(chunk)
         finally:
             await file.close()
