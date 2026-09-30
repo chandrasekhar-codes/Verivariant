@@ -1,0 +1,12 @@
+---
+description: GenomeScope project rules
+alwaysApply: true
+---
+- Never invent genomic facts, coordinates, rsIDs, citations or API fields; verify against source docs or real API responses.
+- Every generated claim must reference evidence IDs with source URLs.
+- Keep LLM calls behind agents/base.py; verification must use a separate call from analysis.
+- All external calls are async, cached, rate-limited and retried.
+- Add or update tests with every change; run them before finishing a task.
+- Show the research-prototype disclaimer in UI, reports and exports.
+- No clinical advice, diagnosis or treatment suggestions, ever.
+- Secrets only via environment variables.
